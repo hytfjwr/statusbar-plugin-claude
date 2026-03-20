@@ -8,6 +8,8 @@ A [StatusBar](https://github.com/hytfjwr/StatusBar) plugin that displays Claude 
 
 Click the icon to see a detailed popup with 5-hour session and 7-day usage breakdowns.
 
+<img width="640" height="576" alt="Widget" src="https://github.com/user-attachments/assets/a3e255f3-b266-4a58-9b45-0af400479a6e" />
+
 ## Requirements
 
 - macOS 26 (Tahoe) or later
@@ -84,6 +86,8 @@ unzip .build/release/claudecodeplugin.statusplugin.zip -d ~/.config/statusbar/pl
 ## Configuration
 
 All settings are configurable from the StatusBar settings panel.
+
+<img width="459" height="646" alt="Settings" src="https://github.com/user-attachments/assets/a8d5a90d-a183-4f3f-8bb5-879a0f3ef0d3" />
 
 | Setting | Default | Description |
 |---------|---------|-------------|
