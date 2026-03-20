@@ -10,16 +10,21 @@ Click the icon to see a detailed popup with 5-hour session and 7-day usage break
 
 <img width="640" height="576" alt="Widget" src="https://github.com/user-attachments/assets/a3e255f3-b266-4a58-9b45-0af400479a6e" />
 
-## Requirements
+## Install
+
+In StatusBar preferences → Plugins → Add Plugin:
+
+```
+hytfjwr/statusbar-plugin-claude
+```
+
+### Requirements
 
 - macOS 26 (Tahoe) or later
-- Swift 6.2 or later
 - [StatusBar](https://github.com/hytfjwr/StatusBar) installed
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed
 
-## Installation
-
-### 1. Set up the statusline script
+### Set up the statusline script
 
 Copy the script that extracts rate limit data from Claude Code:
 
@@ -27,8 +32,6 @@ Copy the script that extracts rate limit data from Claude Code:
 cp scripts/statusline.sh ~/.claude/statusline_ratelimit.sh
 chmod +x ~/.claude/statusline_ratelimit.sh
 ```
-
-### 2. Configure Claude Code
 
 Add the statusLine configuration to `~/.claude/settings.json`:
 
@@ -43,45 +46,15 @@ Add the statusLine configuration to `~/.claude/settings.json`:
 
 This causes Claude Code to periodically write rate limit data to `~/.claude/rate_limits.json`.
 
-### 3. Build and install the plugin
+### Build from source
 
 ```bash
 git clone https://github.com/hytfjwr/statusbar-plugin-claude.git
 cd statusbar-plugin-claude
-
-# Build, bundle, and install in one step
 make dev
 ```
 
-`make dev` performs the following:
-
-1. Release build (`swift build -c release`)
-2. Creates a `.statusplugin` bundle
-3. Copies it to `~/.config/statusbar/plugins/`
-
-Restart StatusBar to load the plugin.
-
-### Manual installation
-
-Run individual steps if needed:
-
-```bash
-# Build only
-make build
-
-# Create bundle
-make bundle
-
-# Create distributable ZIP
-make package
-```
-
-The ZIP is generated at `.build/release/claudecodeplugin.statusplugin.zip`. Extract it manually:
-
-```bash
-mkdir -p ~/.config/statusbar/plugins
-unzip .build/release/claudecodeplugin.statusplugin.zip -d ~/.config/statusbar/plugins/
-```
+`make dev` builds, bundles, and installs the plugin to `~/.config/statusbar/plugins/`. Requires Swift 6.2 or later.
 
 ## Configuration
 
