@@ -9,6 +9,7 @@ public final class ClaudeCodeWidget: StatusBarWidget {
     public let position: WidgetPosition = .right
     public let updateInterval: TimeInterval? = nil
     public let sfSymbolName = "sparkle"
+    public let preferredSettingsSize: CGSize? = CGSize(width: 420, height: 680)
 
     private var data: RateLimitData = .empty
     private var popupPanel: PopupPanel?

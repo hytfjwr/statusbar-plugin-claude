@@ -95,6 +95,35 @@ All settings are configurable from the StatusBar settings panel.
 | Stale Threshold | 2min | Time after which data is considered stale |
 | Data File Path | `~/.claude/rate_limits.json` | Path to the rate limit JSON file |
 
+## Data file format
+
+The plugin reads a JSON file (default `~/.claude/rate_limits.json`) with the following structure:
+
+```json
+{
+  "rate_limits": {
+    "five_hour": {
+      "used_percentage": 42.5,
+      "resets_at": "2026-03-20T18:00:00Z"
+    },
+    "seven_day": {
+      "used_percentage": 15.3,
+      "resets_at": "2026-03-24T00:00:00Z"
+    }
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `rate_limits` | object | yes | Top-level wrapper |
+| `rate_limits.five_hour` | object | no | 5-hour session window |
+| `rate_limits.seven_day` | object | no | 7-day rolling window |
+| `*.used_percentage` | number | no | Usage percentage (0–100). Defaults to 0 |
+| `*.resets_at` | string | no | ISO 8601 timestamp for next reset (e.g. `2026-03-20T18:00:00Z` or `2026-03-20T18:00:00.000Z`) |
+
+If you use a custom data source instead of the bundled statusline script, write this JSON to the path configured in the plugin settings.
+
 ## Troubleshooting
 
 ### Icon appears gray
