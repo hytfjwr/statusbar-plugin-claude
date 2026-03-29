@@ -9,11 +9,12 @@ public final class ClaudeCodeWidget: StatusBarWidget {
     public let position: WidgetPosition = .right
     public let updateInterval: TimeInterval? = nil
     public let sfSymbolName = "sparkle"
-    public let preferredSettingsSize: CGSize? = CGSize(width: 420, height: 680)
+    public let preferredSettingsSize: CGSize? = CGSize(width: 420, height: 780)
 
     private var data: RateLimitData = .empty
     private var popupPanel: PopupPanel?
     private var timer: AnyCancellable?
+    private var lastToastLevel: ToastAlertLevel = .normal
 
     private var settings: ClaudeCodeSettings { ClaudeCodeSettings.shared }
 
@@ -47,6 +48,7 @@ public final class ClaudeCodeWidget: StatusBarWidget {
     private func refresh() {
         if let newData = RateLimitReader.read(from: settings.resolvedDataFilePath) {
             data = newData
+            checkToastThresholds()
         }
         if popupPanel?.isVisible == true {
             popupPanel?.updateContent(makePopupContent())
@@ -70,11 +72,15 @@ public final class ClaudeCodeWidget: StatusBarWidget {
             _ = settings.dataFilePath
             _ = settings.updateInterval
             _ = settings.staleThreshold
+            _ = settings.toastOnWarning
+            _ = settings.toastOnCritical
         } onChange: { [weak self] in
             Task { @MainActor in
-                self?.restartTimer()
-                self?.refresh()
-                self?.observeSettings()
+                guard let self else { return }
+                self.lastToastLevel = self.toastAlertLevel(for: self.data.fiveHour.usedPercentage)
+                self.restartTimer()
+                self.refresh()
+                self.observeSettings()
             }
         }
     }
@@ -92,6 +98,47 @@ public final class ClaudeCodeWidget: StatusBarWidget {
         } else {
             return settings.criticalColor
         }
+    }
+
+    private func checkToastThresholds() {
+        let percentage = data.fiveHour.usedPercentage
+        let currentLevel = toastAlertLevel(for: percentage)
+
+        guard currentLevel > lastToastLevel else {
+            lastToastLevel = currentLevel
+            return
+        }
+        lastToastLevel = currentLevel
+
+        switch currentLevel {
+        case .normal:
+            break
+        case .warning where settings.toastOnWarning:
+            ToastService.shared.post(ToastRequest(
+                title: "Rate Limit Warning",
+                message: "Session usage reached \(formatPercentage(percentage))%",
+                level: .warning,
+                duration: 8
+            ))
+        case .critical where settings.toastOnCritical:
+            ToastService.shared.post(ToastRequest(
+                title: "Rate Limit Critical",
+                message: "Session usage reached \(formatPercentage(percentage))%",
+                level: .error,
+                duration: 0
+            ))
+        default:
+            break
+        }
+    }
+
+    private func toastAlertLevel(for percentage: Double) -> ToastAlertLevel {
+        if percentage >= settings.criticalThreshold {
+            return .critical
+        } else if percentage >= settings.warningThreshold {
+            return .warning
+        }
+        return .normal
     }
 
     private func togglePopup() {
@@ -122,6 +169,18 @@ public final class ClaudeCodeWidget: StatusBarWidget {
             criticalColor: settings.criticalColor,
             staleThreshold: settings.staleThreshold
         )
+    }
+}
+
+// MARK: - Toast Alert Level
+
+private enum ToastAlertLevel: Int, Comparable {
+    case normal = 0
+    case warning = 1
+    case critical = 2
+
+    static func < (lhs: Self, rhs: Self) -> Bool {
+        lhs.rawValue < rhs.rawValue
     }
 }
 
@@ -252,10 +311,7 @@ private struct UsageCard: View {
     }
 
     private var formattedPercentage: String {
-        if percentage == percentage.rounded() {
-            return "\(Int(percentage))"
-        }
-        return String(format: "%.1f", percentage)
+        formatPercentage(percentage)
     }
 
     private func formattedResetTime(_ date: Date) -> String {
@@ -327,6 +383,10 @@ private func colorForPercentage(
     }
 }
 
+private func formatPercentage(_ value: Double) -> String {
+    value == value.rounded() ? "\(Int(value))" : String(format: "%.1f", value)
+}
+
 // MARK: - Settings View
 
 struct ClaudeCodeWidgetSettings: View {
@@ -337,6 +397,8 @@ struct ClaudeCodeWidgetSettings: View {
     @State private var dataFilePath: String
     @State private var updateInterval: Double
     @State private var staleThreshold: Double
+    @State private var toastOnWarning: Bool
+    @State private var toastOnCritical: Bool
 
     init() {
         let s = ClaudeCodeSettings.shared
@@ -347,6 +409,8 @@ struct ClaudeCodeWidgetSettings: View {
         _dataFilePath = State(initialValue: s.dataFilePath)
         _updateInterval = State(initialValue: s.updateInterval)
         _staleThreshold = State(initialValue: s.staleThreshold)
+        _toastOnWarning = State(initialValue: s.toastOnWarning)
+        _toastOnCritical = State(initialValue: s.toastOnCritical)
     }
 
     var body: some View {
@@ -464,6 +528,31 @@ struct ClaudeCodeWidgetSettings: View {
                 .onChange(of: staleThreshold) { _, newValue in
                     ClaudeCodeSettings.shared.staleThreshold = newValue
                 }
+            }
+
+            Divider()
+
+            // Toast Notifications
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Toast Notifications")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+
+                Toggle("Notify at Warning threshold", isOn: $toastOnWarning)
+                    .font(.system(size: 12))
+                    .onChange(of: toastOnWarning) { _, newValue in
+                        ClaudeCodeSettings.shared.toastOnWarning = newValue
+                    }
+
+                Toggle("Notify at Critical threshold", isOn: $toastOnCritical)
+                    .font(.system(size: 12))
+                    .onChange(of: toastOnCritical) { _, newValue in
+                        ClaudeCodeSettings.shared.toastOnCritical = newValue
+                    }
+
+                Text("Show a toast notification when session usage crosses a threshold.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
             }
 
             Divider()
