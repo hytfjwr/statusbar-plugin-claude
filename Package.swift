@@ -8,7 +8,7 @@ let package = Package(
         .library(name: "ClaudeCodePlugin", type: .dynamic, targets: ["ClaudeCodePlugin"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/hytfjwr/StatusBarKit", from: "1.1.1"),
+        .package(url: "https://github.com/hytfjwr/StatusBarKit", from: "1.8.0"),
     ],
     targets: [
         .target(
