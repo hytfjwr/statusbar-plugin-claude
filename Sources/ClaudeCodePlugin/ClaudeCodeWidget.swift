@@ -34,13 +34,19 @@ public final class ClaudeCodeWidget: StatusBarWidget {
     }
 
     public func body() -> some View {
-        Image(systemName: "sparkle")
-            .font(Theme.sfIconFont)
-            .foregroundStyle(barIconColor)
-            .contentShape(Rectangle())
-            .onTapGesture { [weak self] in
-                self?.togglePopup()
+        HStack(spacing: 4) {
+            Image(systemName: "sparkle")
+                .font(Theme.sfIconFont)
+                .foregroundStyle(barIconColor)
+
+            if settings.barDisplayMode != "icon" {
+                barUsageText
             }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { [weak self] in
+            self?.togglePopup()
+        }
     }
 
     // MARK: - Private
@@ -74,6 +80,7 @@ public final class ClaudeCodeWidget: StatusBarWidget {
             _ = settings.staleThreshold
             _ = settings.toastOnWarning
             _ = settings.toastOnCritical
+            _ = settings.barDisplayMode
         } onChange: { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
@@ -82,6 +89,36 @@ public final class ClaudeCodeWidget: StatusBarWidget {
                 self.refresh()
                 self.observeSettings()
             }
+        }
+    }
+
+    @ViewBuilder
+    private var barUsageText: some View {
+        let isStale = data.isStale(threshold: settings.staleThreshold)
+        let font = Font.system(size: 10, weight: .medium, design: .monospaced)
+        let mode = settings.barDisplayMode
+
+        switch mode {
+        case "5h":
+            Text(formatPercentage(data.fiveHour.usedPercentage) + "%")
+                .font(font)
+                .foregroundStyle(isStale ? Theme.secondary : colorForPercentage(data.fiveHour.usedPercentage))
+        case "7d":
+            Text(formatPercentage(data.sevenDay.usedPercentage) + "%")
+                .font(font)
+                .foregroundStyle(isStale ? Theme.secondary : colorForPercentage(data.sevenDay.usedPercentage))
+        case "both":
+            Text(formatPercentage(data.fiveHour.usedPercentage))
+                .font(font)
+                .foregroundStyle(isStale ? Theme.secondary : colorForPercentage(data.fiveHour.usedPercentage))
+            Text("/")
+                .font(.system(size: 9, weight: .regular))
+                .foregroundStyle(Theme.secondary)
+            Text(formatPercentage(data.sevenDay.usedPercentage))
+                .font(font)
+                .foregroundStyle(isStale ? Theme.secondary : colorForPercentage(data.sevenDay.usedPercentage))
+        default:
+            EmptyView()
         }
     }
 
@@ -399,6 +436,7 @@ struct ClaudeCodeWidgetSettings: View {
     @State private var staleThreshold: Double
     @State private var toastOnWarning: Bool
     @State private var toastOnCritical: Bool
+    @State private var barDisplayMode: String
 
     init() {
         let s = ClaudeCodeSettings.shared
@@ -411,12 +449,37 @@ struct ClaudeCodeWidgetSettings: View {
         _staleThreshold = State(initialValue: s.staleThreshold)
         _toastOnWarning = State(initialValue: s.toastOnWarning)
         _toastOnCritical = State(initialValue: s.toastOnCritical)
+        _barDisplayMode = State(initialValue: s.barDisplayMode)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             // Live Preview
             settingsPreview
+
+            Divider()
+
+            // Bar Display Mode
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Bar Display")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+
+                Picker("Bar Display", selection: $barDisplayMode) {
+                    Text("Icon only").tag("icon")
+                    Text("5h usage").tag("5h")
+                    Text("7d usage").tag("7d")
+                    Text("Both (5h / 7d)").tag("both")
+                }
+                .pickerStyle(.radioGroup)
+                .onChange(of: barDisplayMode) { _, newValue in
+                    ClaudeCodeSettings.shared.barDisplayMode = newValue
+                }
+
+                Text("Show usage percentages next to the icon in the menu bar.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+            }
 
             Divider()
 
@@ -614,19 +677,48 @@ struct ClaudeCodeWidgetSettings: View {
     private func previewBar(percentage: Double, label: String) -> some View {
         let color = previewColor(for: percentage)
         return VStack(spacing: 6) {
-            Image(systemName: "sparkle")
-                .font(.system(size: 10))
-                .foregroundStyle(color)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(color.opacity(0.1))
+            HStack(spacing: 3) {
+                Image(systemName: "sparkle")
+                    .font(.system(size: 10))
+                    .foregroundStyle(color)
+
+                if barDisplayMode != "icon" {
+                    previewUsageText(percentage: percentage, color: color)
                 }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(color.opacity(0.1))
+            }
 
             Text(label)
                 .font(.system(size: 9, weight: .medium))
                 .foregroundStyle(Theme.secondary)
+        }
+    }
+
+    @MainActor @ViewBuilder
+    private func previewUsageText(percentage: Double, color: Color) -> some View {
+        let font = Font.system(size: 9, weight: .medium, design: .monospaced)
+        switch barDisplayMode {
+        case "5h", "7d":
+            Text(formatPercentage(percentage) + "%")
+                .font(font)
+                .foregroundStyle(color)
+        case "both":
+            Text(formatPercentage(percentage))
+                .font(font)
+                .foregroundStyle(color)
+            Text("/")
+                .font(.system(size: 8, weight: .regular))
+                .foregroundStyle(Theme.secondary)
+            Text(formatPercentage(max(0, percentage - 20)))
+                .font(font)
+                .foregroundStyle(color.opacity(0.7))
+        default:
+            EmptyView()
         }
     }
 
