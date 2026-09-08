@@ -9,7 +9,7 @@ public final class ClaudeCodeWidget: StatusBarWidget {
     public let position: WidgetPosition = .right
     public let updateInterval: TimeInterval? = nil
     public let sfSymbolName = "sparkle"
-    public let preferredSettingsSize: CGSize? = CGSize(width: 420, height: 780)
+    public let preferredSettingsSize: CGSize? = CGSize(width: 420, height: 820)
 
     private var data: RateLimitData = .empty
     private var popupPanel: PopupPanel?
@@ -58,6 +58,7 @@ public final class ClaudeCodeWidget: StatusBarWidget {
         }
         if popupPanel?.isVisible == true {
             popupPanel?.updateContent(makePopupContent())
+            popupPanel?.resizeToFitContent()
         }
     }
 
@@ -117,6 +118,30 @@ public final class ClaudeCodeWidget: StatusBarWidget {
             Text(formatPercentage(data.sevenDay.usedPercentage))
                 .font(font)
                 .foregroundStyle(isStale ? Theme.secondary : colorForPercentage(data.sevenDay.usedPercentage))
+        case "model":
+            // Resolved up front: the ForEach closure escapes, and this widget is a class.
+            let entries = data.modelScoped.map { window in
+                (
+                    text: formatPercentage(window.usedPercentage),
+                    color: isStale ? Theme.secondary : colorForPercentage(window.usedPercentage)
+                )
+            }
+            if entries.isEmpty {
+                Text("\u{2014}")
+                    .font(font)
+                    .foregroundStyle(Theme.secondary)
+            } else {
+                ForEach(Array(entries.enumerated()), id: \.offset) { index, entry in
+                    if index > 0 {
+                        Text("/")
+                            .font(.system(size: 9, weight: .regular))
+                            .foregroundStyle(Theme.secondary)
+                    }
+                    Text(entry.text)
+                        .font(font)
+                        .foregroundStyle(entry.color)
+                }
+            }
         default:
             EmptyView()
         }
@@ -278,6 +303,19 @@ private struct ClaudeCodePopupContent: View {
                         warningColor: warningColor,
                         criticalColor: criticalColor
                     )
+
+                    ForEach(data.modelScoped) { window in
+                        UsageCard(
+                            title: "\(window.displayName) (7d)",
+                            icon: "cpu",
+                            percentage: window.usedPercentage,
+                            resetsAt: window.resetsAt,
+                            warningThreshold: warningThreshold,
+                            criticalThreshold: criticalThreshold,
+                            warningColor: warningColor,
+                            criticalColor: criticalColor
+                        )
+                    }
                 }
                 .padding(.horizontal, 12)
                 .padding(.bottom, 14)
@@ -470,13 +508,14 @@ struct ClaudeCodeWidgetSettings: View {
                     Text("5h usage").tag("5h")
                     Text("7d usage").tag("7d")
                     Text("Both (5h / 7d)").tag("both")
+                    Text("Per-model (7d)").tag("model")
                 }
                 .pickerStyle(.radioGroup)
                 .onChange(of: barDisplayMode) { _, newValue in
                     ClaudeCodeSettings.shared.barDisplayMode = newValue
                 }
 
-                Text("Show usage percentages next to the icon in the menu bar.")
+                Text("Show usage percentages next to the icon in the menu bar. Per-model shows the weekly windows scoped to a model bucket, such as Fable.")
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
             }
@@ -703,7 +742,7 @@ struct ClaudeCodeWidgetSettings: View {
     private func previewUsageText(percentage: Double, color: Color) -> some View {
         let font = Font.system(size: 9, weight: .medium, design: .monospaced)
         switch barDisplayMode {
-        case "5h", "7d":
+        case "5h", "7d", "model":
             Text(formatPercentage(percentage) + "%")
                 .font(font)
                 .foregroundStyle(color)
