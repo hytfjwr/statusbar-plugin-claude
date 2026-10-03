@@ -15,14 +15,18 @@ struct ModelScopedWindow: Sendable, Identifiable {
 }
 
 struct RateLimitData: Sendable {
-    let fiveHour: RateLimitWindow
-    let sevenDay: RateLimitWindow
+    /// nil when the source reported no such window, or its reset time has already passed —
+    /// both mean "unknown", which must not read as 0%.
+    let fiveHour: RateLimitWindow?
+    let sevenDay: RateLimitWindow?
     let modelScoped: [ModelScopedWindow]
+    /// When the source observed these numbers: `rate_limits.fetched_at` when present,
+    /// otherwise the data file's modification time.
     let fetchedAt: Date
 
     static let empty = RateLimitData(
-        fiveHour: RateLimitWindow(usedPercentage: 0, resetsAt: nil),
-        sevenDay: RateLimitWindow(usedPercentage: 0, resetsAt: nil),
+        fiveHour: nil,
+        sevenDay: nil,
         modelScoped: [],
         fetchedAt: .distantPast
     )
@@ -38,53 +42,61 @@ enum RateLimitReader {
         guard let data = FileManager.default.contents(atPath: path) else {
             return nil
         }
-        return parse(data)
+        let modifiedAt = (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
+        return parse(data, fallbackFetchedAt: modifiedAt ?? Date())
     }
 
-    static func parse(_ data: Data) -> RateLimitData? {
+    static func parse(_ data: Data, fallbackFetchedAt: Date, now: Date = Date()) -> RateLimitData? {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let rateLimits = json["rate_limits"] as? [String: Any]
         else {
             return nil
         }
 
-        let fiveHour = parseWindow(rateLimits["five_hour"])
-        let sevenDay = parseWindow(rateLimits["seven_day"])
-        let modelScoped = parseModelScoped(rateLimits["model_scoped"])
-
         return RateLimitData(
-            fiveHour: fiveHour,
-            sevenDay: sevenDay,
-            modelScoped: modelScoped,
-            fetchedAt: Date()
+            fiveHour: parseWindow(rateLimits["five_hour"], now: now),
+            sevenDay: parseWindow(rateLimits["seven_day"], now: now),
+            modelScoped: parseModelScoped(rateLimits["model_scoped"], now: now),
+            fetchedAt: parseDate(rateLimits["fetched_at"] as? String) ?? fallbackFetchedAt
         )
     }
 
-    private static func parseWindow(_ value: Any?) -> RateLimitWindow {
-        guard let dict = value as? [String: Any] else {
-            return RateLimitWindow(usedPercentage: 0, resetsAt: nil)
+    /// nil for a missing or null window, one without a usage figure, or one whose reset time
+    /// has passed: the figure belongs to a window that is already over.
+    private static func parseWindow(_ value: Any?, now: Date) -> RateLimitWindow? {
+        guard let dict = value as? [String: Any],
+              let usedPercentage = dict["used_percentage"] as? Double
+        else {
+            return nil
         }
-
-        return RateLimitWindow(
-            usedPercentage: (dict["used_percentage"] as? Double) ?? 0,
-            resetsAt: parseDate(dict["resets_at"] as? String)
-        )
+        let resetsAt = parseDate(dict["resets_at"] as? String)
+        if let resetsAt, resetsAt <= now {
+            return nil
+        }
+        return RateLimitWindow(usedPercentage: usedPercentage, resetsAt: resetsAt)
     }
 
     /// Per-model weekly windows. Additive — absent for accounts the server emits none for.
-    private static func parseModelScoped(_ value: Any?) -> [ModelScopedWindow] {
+    /// Entries without a usage figure, or whose reset time has passed, are dropped.
+    private static func parseModelScoped(_ value: Any?, now: Date) -> [ModelScopedWindow] {
         guard let entries = value as? [[String: Any]] else {
             return []
         }
 
         return entries.compactMap { entry in
-            guard let displayName = entry["display_name"] as? String, !displayName.isEmpty else {
+            guard let displayName = entry["display_name"] as? String, !displayName.isEmpty,
+                  let usedPercentage = entry["used_percentage"] as? Double
+            else {
+                return nil
+            }
+            let resetsAt = parseDate(entry["resets_at"] as? String)
+            if let resetsAt, resetsAt <= now {
                 return nil
             }
             return ModelScopedWindow(
                 displayName: displayName,
-                usedPercentage: (entry["used_percentage"] as? Double) ?? 0,
-                resetsAt: parseDate(entry["resets_at"] as? String)
+                usedPercentage: usedPercentage,
+                resetsAt: resetsAt
             )
         }
     }

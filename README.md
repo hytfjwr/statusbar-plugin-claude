@@ -91,6 +91,9 @@ All settings are configurable from the StatusBar settings panel.
 | Bar Display | Icon only | Whether the menu bar shows usage percentages next to the icon |
 | Data File Path | `~/.claude/rate_limits.json` | Path to the rate limit JSON file |
 
+Toast notifications fire when session (5h) usage crosses the warning or critical threshold, at most
+once per level for each 5-hour window. A stale reading never toasts.
+
 ## Data file format
 
 The plugin reads a JSON file (default `~/.claude/rate_limits.json`) with the following structure:
@@ -98,6 +101,7 @@ The plugin reads a JSON file (default `~/.claude/rate_limits.json`) with the fol
 ```json
 {
   "rate_limits": {
+    "fetched_at": "2026-03-20T14:05:00Z",
     "five_hour": {
       "used_percentage": 42.5,
       "resets_at": "2026-03-20T18:00:00Z"
@@ -120,12 +124,16 @@ The plugin reads a JSON file (default `~/.claude/rate_limits.json`) with the fol
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `rate_limits` | object | yes | Top-level wrapper |
+| `rate_limits.fetched_at` | string | no | ISO 8601 time the numbers were observed. The stale check measures from it; when absent, the file's modification time is used |
 | `rate_limits.five_hour` | object | no | 5-hour session window |
 | `rate_limits.seven_day` | object | no | 7-day rolling window |
 | `rate_limits.model_scoped` | array | no | Weekly windows scoped to a model bucket. Rendered as one card each, in order |
 | `model_scoped[].display_name` | string | yes | Label for the bucket, as supplied by the server (e.g. `Fable`). Entries without one are ignored |
-| `*.used_percentage` | number | no | Usage percentage (0–100). Defaults to 0 |
+| `*.used_percentage` | number | no | Usage percentage (0–100). A window or entry without it is treated as unknown |
 | `*.resets_at` | string | no | ISO 8601 timestamp for next reset (e.g. `2026-03-20T18:00:00Z` or `2026-03-20T18:00:00.000Z`) |
+
+A window that is missing, `null`, lacks `used_percentage`, or whose `resets_at` has already passed is
+shown as unknown (`—`, gray) rather than as 0%.
 
 If you use a custom data source instead of the bundled statusline script, write this JSON to the path configured in the plugin settings.
 
@@ -133,7 +141,7 @@ If you use a custom data source instead of the bundled statusline script, write 
 
 ### Icon appears gray
 
-The data is stale. Check:
+The data is stale, or the 5-hour window is unknown. Check:
 
 - Claude Code is running
 - `~/.claude/settings.json` contains the `statusLine` configuration
