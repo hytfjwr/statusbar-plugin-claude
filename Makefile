@@ -17,10 +17,14 @@ DYLIB := $(BUILD_DIR)/lib$(PLUGIN_NAME).dylib
 ZIP_FILE := $(BUILD_DIR)/$(BUNDLE_NAME).statusplugin.zip
 PLUGINS_DIR := $(HOME)/.config/statusbar/plugins
 
+# Swift 6.4 defaults to the swiftbuild backend, which fails to link this dylib against the
+# StatusBarKit dylib ("can't link a dylib with itself") and puts products outside $(BUILD_DIR).
+SWIFT_BUILD_FLAGS ?= --build-system native
+
 .PHONY: build bundle package dev clean
 
 build:
-	swift build -c release
+	swift build -c release $(SWIFT_BUILD_FLAGS)
 
 bundle: build
 	mkdir -p $(BUNDLE_DIR)
