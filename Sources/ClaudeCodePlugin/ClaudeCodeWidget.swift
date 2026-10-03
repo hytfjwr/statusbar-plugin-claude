@@ -14,7 +14,10 @@ public final class ClaudeCodeWidget: StatusBarWidget {
     private var data: RateLimitData = .empty
     private var popupPanel: PopupPanel?
     private var timer: AnyCancellable?
-    private var lastToastLevel: ToastAlertLevel = .normal
+    /// Highest level already toasted for the 5h window that resets at `toastedWindowResetsAt`.
+    /// Only a new window clears it, so a reading that dips and comes back does not toast again.
+    private var toastedLevel: ToastAlertLevel = .normal
+    private var toastedWindowResetsAt: Date?
 
     private var settings: ClaudeCodeSettings { ClaudeCodeSettings.shared }
 
@@ -85,7 +88,7 @@ public final class ClaudeCodeWidget: StatusBarWidget {
         } onChange: { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
-                self.lastToastLevel = self.toastAlertLevel(for: self.data.fiveHour.usedPercentage)
+                self.acknowledgeCurrentLevel()
                 self.restartTimer()
                 self.refresh()
                 self.observeSettings()
@@ -101,23 +104,15 @@ public final class ClaudeCodeWidget: StatusBarWidget {
 
         switch mode {
         case "5h":
-            Text(formatPercentage(data.fiveHour.usedPercentage) + "%")
-                .font(font)
-                .foregroundStyle(isStale ? Theme.secondary : colorForPercentage(data.fiveHour.usedPercentage))
+            barPercentText(data.fiveHour, unit: "%", isStale: isStale, font: font)
         case "7d":
-            Text(formatPercentage(data.sevenDay.usedPercentage) + "%")
-                .font(font)
-                .foregroundStyle(isStale ? Theme.secondary : colorForPercentage(data.sevenDay.usedPercentage))
+            barPercentText(data.sevenDay, unit: "%", isStale: isStale, font: font)
         case "both":
-            Text(formatPercentage(data.fiveHour.usedPercentage))
-                .font(font)
-                .foregroundStyle(isStale ? Theme.secondary : colorForPercentage(data.fiveHour.usedPercentage))
+            barPercentText(data.fiveHour, unit: "", isStale: isStale, font: font)
             Text("/")
                 .font(.system(size: 9, weight: .regular))
                 .foregroundStyle(Theme.secondary)
-            Text(formatPercentage(data.sevenDay.usedPercentage))
-                .font(font)
-                .foregroundStyle(isStale ? Theme.secondary : colorForPercentage(data.sevenDay.usedPercentage))
+            barPercentText(data.sevenDay, unit: "", isStale: isStale, font: font)
         case "model":
             // Resolved up front: the ForEach closure escapes, and this widget is a class.
             let entries = data.modelScoped.map { window in
@@ -147,9 +142,25 @@ public final class ClaudeCodeWidget: StatusBarWidget {
         }
     }
 
+    /// A window's percentage tinted by level, or a gray dash when the window is unknown.
+    @ViewBuilder
+    private func barPercentText(_ window: RateLimitWindow?, unit: String, isStale: Bool, font: Font) -> some View {
+        if let window {
+            Text(formatPercentage(window.usedPercentage) + unit)
+                .font(font)
+                .foregroundStyle(isStale ? Theme.secondary : colorForPercentage(window.usedPercentage))
+        } else {
+            Text("\u{2014}")
+                .font(font)
+                .foregroundStyle(Theme.secondary)
+        }
+    }
+
     private var barIconColor: Color {
-        let isStale = data.isStale(threshold: settings.staleThreshold)
-        return isStale ? Theme.secondary : colorForPercentage(data.fiveHour.usedPercentage)
+        guard let fiveHour = data.fiveHour, !data.isStale(threshold: settings.staleThreshold) else {
+            return Theme.secondary
+        }
+        return colorForPercentage(fiveHour.usedPercentage)
     }
 
     private func colorForPercentage(_ percentage: Double) -> Color {
@@ -162,15 +173,28 @@ public final class ClaudeCodeWidget: StatusBarWidget {
         }
     }
 
-    private func checkToastThresholds() {
-        let percentage = data.fiveHour.usedPercentage
-        let currentLevel = toastAlertLevel(for: percentage)
+    /// Treat the current reading as already announced, so editing a threshold does not toast.
+    private func acknowledgeCurrentLevel() {
+        guard let window = data.fiveHour else { return }
+        toastedWindowResetsAt = window.resetsAt
+        toastedLevel = toastAlertLevel(for: window.usedPercentage)
+    }
 
-        guard currentLevel > lastToastLevel else {
-            lastToastLevel = currentLevel
+    private func checkToastThresholds() {
+        // A stale reading was either announced while it was fresh, or is too old to act on.
+        guard let window = data.fiveHour, !data.isStale(threshold: settings.staleThreshold) else {
             return
         }
-        lastToastLevel = currentLevel
+
+        if !isSameWindow(window.resetsAt, toastedWindowResetsAt) {
+            toastedWindowResetsAt = window.resetsAt
+            toastedLevel = .normal
+        }
+
+        let percentage = window.usedPercentage
+        let currentLevel = toastAlertLevel(for: percentage)
+        guard currentLevel > toastedLevel else { return }
+        toastedLevel = currentLevel
 
         switch currentLevel {
         case .normal:
@@ -285,8 +309,8 @@ private struct ClaudeCodePopupContent: View {
                     UsageCard(
                         title: "Session (5h)",
                         icon: "bolt.fill",
-                        percentage: data.fiveHour.usedPercentage,
-                        resetsAt: data.fiveHour.resetsAt,
+                        percentage: data.fiveHour?.usedPercentage,
+                        resetsAt: data.fiveHour?.resetsAt,
                         warningThreshold: warningThreshold,
                         criticalThreshold: criticalThreshold,
                         warningColor: warningColor,
@@ -296,8 +320,8 @@ private struct ClaudeCodePopupContent: View {
                     UsageCard(
                         title: "Weekly (7d)",
                         icon: "calendar",
-                        percentage: data.sevenDay.usedPercentage,
-                        resetsAt: data.sevenDay.resetsAt,
+                        percentage: data.sevenDay?.usedPercentage,
+                        resetsAt: data.sevenDay?.resetsAt,
                         warningThreshold: warningThreshold,
                         criticalThreshold: criticalThreshold,
                         warningColor: warningColor,
@@ -330,7 +354,7 @@ private struct ClaudeCodePopupContent: View {
 private struct UsageCard: View {
     let title: String
     let icon: String
-    let percentage: Double
+    let percentage: Double?
     let resetsAt: Date?
     let warningThreshold: Double
     let criticalThreshold: Double
@@ -338,7 +362,8 @@ private struct UsageCard: View {
     let criticalColor: Color
 
     private var color: Color {
-        colorForPercentage(
+        guard let percentage else { return Theme.secondary }
+        return colorForPercentage(
             percentage,
             warning: warningThreshold,
             critical: criticalThreshold,
@@ -357,12 +382,12 @@ private struct UsageCard: View {
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Theme.primary)
                 Spacer()
-                Text("\(formattedPercentage)%")
+                Text(formattedPercentage)
                     .font(.system(size: 18, weight: .bold, design: .rounded))
                     .foregroundStyle(color)
             }
 
-            UsageProgressBar(percentage: percentage, color: color)
+            UsageProgressBar(percentage: percentage ?? 0, color: color)
 
             if let resetsAt {
                 HStack(spacing: 4) {
@@ -386,7 +411,8 @@ private struct UsageCard: View {
     }
 
     private var formattedPercentage: String {
-        formatPercentage(percentage)
+        guard let percentage else { return "\u{2014}" }
+        return "\(formatPercentage(percentage))%"
     }
 
     private func formattedResetTime(_ date: Date) -> String {
@@ -460,6 +486,19 @@ private func colorForPercentage(
 
 private func formatPercentage(_ value: Double) -> String {
     value == value.rounded() ? "\(Int(value))" : String(format: "%.1f", value)
+}
+
+/// Two reset times name the same window when they are under a minute apart: sources disagree on
+/// sub-second precision, while consecutive 5h windows are hours apart.
+private func isSameWindow(_ lhs: Date?, _ rhs: Date?) -> Bool {
+    switch (lhs, rhs) {
+    case (nil, nil):
+        return true
+    case let (lhs?, rhs?):
+        return abs(lhs.timeIntervalSince(rhs)) < 60
+    default:
+        return false
+    }
 }
 
 // MARK: - Settings View

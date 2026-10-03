@@ -45,24 +45,29 @@ Add the statusLine configuration to `~/.claude/settings.json`:
 }
 ```
 
-This causes Claude Code to periodically write rate limit data to `~/.claude/rate_limits.json`.
+Claude Code runs the script for every open session, and each passes the figures from its own last
+request, so an idle session carries old numbers. The script therefore takes the 5-hour, 7-day and
+per-model windows from the claude.ai usage endpoint, which is account-wide, and writes
+`~/.claude/rate_limits.json` from that snapshot once a minute.
 
 The script needs `jq`, `bc` and `curl` on `PATH`.
 
-### Per-model weekly windows (Fable)
+### Usage snapshot
 
-The payload Claude Code hands the statusline script only carries the 5-hour and 7-day windows.
-The windows scoped to a single model bucket — `Fable` today — are only served by the claude.ai
-usage endpoint, so the script fetches them itself:
+The payload Claude Code hands the statusline script describes only that session, and carries no
+per-model windows at all. The script therefore reads the claude.ai usage endpoint itself:
 
 - it reads the claude.ai OAuth token from the login keychain (`Claude Code-credentials`), falling
   back to `~/.claude/.credentials.json`
 - it snapshots `https://api.anthropic.com/api/oauth/usage` into `~/.claude/rate_limits_usage.json`
-  at most once every 5 minutes, in a detached background process
-- a failed fetch backs off for a full cycle and leaves the previous snapshot in place
+  at most once a minute, in a detached background process, and writes `~/.claude/rate_limits.json`
+  from it with `fetched_at` set to the fetch time
+- a failed fetch backs off for a full cycle and leaves both files in place, so the plugin marks the
+  data stale once it ages past the Stale Threshold
 
-macOS asks once for permission to read the keychain item; grant it and the windows appear in the
-popup. Deny it and everything else keeps working — only the per-model cards are missing.
+macOS asks once for permission to read the keychain item; grant it. Deny it and the script falls
+back to the payload of whichever session rendered last: the 5-hour and 7-day numbers can jump
+between sessions, and the per-model cards are missing.
 
 ### Build from source
 
@@ -91,6 +96,9 @@ All settings are configurable from the StatusBar settings panel.
 | Bar Display | Icon only | Whether the menu bar shows usage percentages next to the icon |
 | Data File Path | `~/.claude/rate_limits.json` | Path to the rate limit JSON file |
 
+Toast notifications fire when session (5h) usage crosses the warning or critical threshold, at most
+once per level for each 5-hour window. A stale reading never toasts.
+
 ## Data file format
 
 The plugin reads a JSON file (default `~/.claude/rate_limits.json`) with the following structure:
@@ -98,6 +106,7 @@ The plugin reads a JSON file (default `~/.claude/rate_limits.json`) with the fol
 ```json
 {
   "rate_limits": {
+    "fetched_at": "2026-03-20T14:05:00Z",
     "five_hour": {
       "used_percentage": 42.5,
       "resets_at": "2026-03-20T18:00:00Z"
@@ -120,12 +129,16 @@ The plugin reads a JSON file (default `~/.claude/rate_limits.json`) with the fol
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `rate_limits` | object | yes | Top-level wrapper |
+| `rate_limits.fetched_at` | string | no | ISO 8601 time the numbers were observed. The stale check measures from it; when absent, the file's modification time is used |
 | `rate_limits.five_hour` | object | no | 5-hour session window |
 | `rate_limits.seven_day` | object | no | 7-day rolling window |
 | `rate_limits.model_scoped` | array | no | Weekly windows scoped to a model bucket. Rendered as one card each, in order |
 | `model_scoped[].display_name` | string | yes | Label for the bucket, as supplied by the server (e.g. `Fable`). Entries without one are ignored |
-| `*.used_percentage` | number | no | Usage percentage (0–100). Defaults to 0 |
+| `*.used_percentage` | number | no | Usage percentage (0–100). A window or entry without it is treated as unknown |
 | `*.resets_at` | string | no | ISO 8601 timestamp for next reset (e.g. `2026-03-20T18:00:00Z` or `2026-03-20T18:00:00.000Z`) |
+
+A window that is missing, `null`, lacks `used_percentage`, or whose `resets_at` has already passed is
+shown as unknown (`—`, gray) rather than as 0%.
 
 If you use a custom data source instead of the bundled statusline script, write this JSON to the path configured in the plugin settings.
 
@@ -133,7 +146,7 @@ If you use a custom data source instead of the bundled statusline script, write 
 
 ### Icon appears gray
 
-The data is stale. Check:
+The data is stale, or the 5-hour window is unknown. Check:
 
 - Claude Code is running
 - `~/.claude/settings.json` contains the `statusLine` configuration
@@ -142,6 +155,18 @@ The data is stale. Check:
 ```bash
 cat ~/.claude/rate_limits.json | jq .
 ```
+
+### Numbers jump between values
+
+The script is running without a usage snapshot and falling back to each session's payload. Check
+that the snapshot exists and is recent:
+
+```bash
+ls -l ~/.claude/rate_limits_usage.json
+jq '.rate_limits.fetched_at' ~/.claude/rate_limits.json
+```
+
+If it is missing, see the next section.
 
 ### Fable usage is missing from the popup
 
