@@ -1,11 +1,14 @@
 #!/bin/bash
 # Claude Code Statusline Script
-# Reads JSON from stdin, extracts rate_limits, and saves to ~/.claude/rate_limits.json
-# Also outputs a compact status line for the terminal.
+# Reads the status line payload from stdin, writes ~/.claude/rate_limits.json for the
+# StatusBar plugin, and prints a compact status line.
 #
-# The stdin payload only carries five_hour and seven_day. The per-model weekly
-# windows (Fable) come from the claude.ai usage endpoint, which this script
-# snapshots in the background at most once every 5 minutes.
+# Claude Code runs this for every open session, each passing the figures from its own last
+# request, so idle sessions carry old numbers. The plan windows are therefore taken from the
+# claude.ai usage endpoint, which is account-wide: a detached refresh snapshots it at most once
+# a minute and is the only writer of the export.
+# Without a snapshot (the keychain read was denied, say) the export falls back to this
+# session's payload; with several sessions open, whichever rendered last wins.
 #
 # Setup: Add to ~/.claude/settings.json:
 #   "statusLine": {
@@ -23,15 +26,71 @@ USAGE_URL="https://api.anthropic.com/api/oauth/usage"
 KEYCHAIN_SERVICE="Claude Code-credentials"
 
 # Age at which the snapshot is refreshed, and the floor between two attempts.
-REFRESH_AFTER=300
+REFRESH_AFTER=60
 # Age at which the snapshot says nothing useful, so its windows are dropped.
 DISCARD_AFTER=86400
+
+# Usage endpoint body -> export. Expects --arg fetched_at.
+# ISO8601DateFormatter rejects the microsecond precision the endpoint emits, so reset times are
+# normalised to whole seconds in UTC. Windows the endpoint does not report are left out.
+EXPORT_FROM_USAGE='
+    def whole_seconds: if type == "string" then sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") else null end;
+    def drop_nulls: with_entries(select(.value != null));
+    def window($kind):
+        [ (.limits // [])[] | select(.kind == $kind and .percent != null) ][0]
+        | if . == null then null
+          else {used_percentage: .percent, resets_at: (.resets_at | whole_seconds)} | drop_nulls
+          end;
+    {
+        rate_limits: (
+            {fetched_at: $fetched_at}
+            + (window("session") | if . then {five_hour: .} else {} end)
+            + (window("weekly_all") | if . then {seven_day: .} else {} end)
+            + ([ (.limits // [])[]
+                 | select(.kind == "weekly_scoped" and .scope.model.display_name != null and .percent != null)
+                 | {
+                     display_name: .scope.model.display_name,
+                     used_percentage: .percent,
+                     resets_at: (.resets_at | whole_seconds)
+                   }
+                 | drop_nulls
+               ]
+               | if length > 0 then {model_scoped: .} else {} end)
+        )
+    }
+'
+
+# Status line payload -> export, for when there is no snapshot. A payload without rate_limits
+# stays null, so the plugin keeps its last reading. resets_at arrives as epoch seconds, which the
+# plugin does not read, so it is converted to ISO 8601.
+EXPORT_FROM_PAYLOAD='
+    def iso: if type == "number" then floor | todate else . end;
+    def window: if type == "object" then (.resets_at |= iso) else . end;
+    {
+        rate_limits: (
+            if .rate_limits == null then null
+            else .rate_limits | (.five_hour |= window) | (.seven_day |= window)
+            end
+        )
+    }
+'
 
 # Seconds since a file was last written, or a very large number when missing.
 file_age() {
     local mtime
     mtime=$(stat -f %m "$1" 2>/dev/null) || { echo 999999999; return; }
     echo $(( $(date +%s) - mtime ))
+}
+
+# Modification time of a file as ISO 8601 UTC, whole seconds.
+file_mtime_iso() {
+    date -u -r "$(stat -f %m "$1")" +%Y-%m-%dT%H:%M:%SZ
+}
+
+# Replace a file from stdin without a reader ever seeing it half-written. The temp name is
+# per-process because several sessions may write at once.
+write_atomic() {
+    cat > "$1.$$.tmp" 2>/dev/null && mv -f "$1.$$.tmp" "$1" 2>/dev/null
 }
 
 # The claude.ai access token. Keychain first — the plain file is a leftover from
@@ -50,7 +109,7 @@ access_token() {
 # Fetch the usage snapshot and store it. Runs detached, so it reports failure by
 # leaving the previous snapshot in place.
 refresh_usage() {
-    local token body
+    local token body export_json
     token=$(access_token) || return
     [ -n "$token" ] || return
 
@@ -62,8 +121,11 @@ refresh_usage() {
     # An in-band error body parses fine but carries none of the windows.
     echo "$body" | jq -e 'type == "object" and (has("limits") or has("five_hour"))' >/dev/null 2>&1 || return
 
-    # Write-then-rename so a reader never sees a half-written snapshot.
-    echo "$body" > "$USAGE_CACHE.tmp" 2>/dev/null && mv -f "$USAGE_CACHE.tmp" "$USAGE_CACHE" 2>/dev/null
+    echo "$body" | write_atomic "$USAGE_CACHE"
+
+    # The only writer of the export while a snapshot exists: every session reads the same answer.
+    export_json=$(echo "$body" | jq --arg fetched_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$EXPORT_FROM_USAGE" 2>/dev/null)
+    [ -n "$export_json" ] && echo "$export_json" | write_atomic "$OUTPUT_FILE"
 }
 
 # Kick off a refresh when the snapshot has aged out. The attempt marker is
@@ -75,50 +137,19 @@ maybe_refresh_usage() {
     ( refresh_usage ) >/dev/null 2>&1 &
 }
 
-# The weekly windows scoped to a model bucket, as a JSON array. Empty when the
-# snapshot is missing, aged out, or carries no such window.
-model_scoped_json() {
-    [ "$(file_age "$USAGE_CACHE")" -lt "$DISCARD_AFTER" ] || { echo "[]"; return; }
-    jq -c '
-        [ (.limits // [])[]
-          | select(.kind == "weekly_scoped" and .scope.model.display_name != null)
-          | {
-              display_name: .scope.model.display_name,
-              used_percentage: (.percent // 0),
-              # ISO8601DateFormatter rejects the microsecond precision the
-              # endpoint emits, so normalise to whole seconds in UTC.
-              resets_at: (.resets_at | if . then (sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z")) else null end)
-            }
-        ]
-    ' "$USAGE_CACHE" 2>/dev/null
-}
-
 maybe_refresh_usage
 
-MODEL_SCOPED=$(model_scoped_json)
-[ -n "$MODEL_SCOPED" ] || MODEL_SCOPED="[]"
+# The snapshot is account-wide, so every session shows the same numbers. The refresh writes the
+# export; here it is only read for the terminal line.
+RATE_JSON=""
+if [ "$(file_age "$USAGE_CACHE")" -lt "$DISCARD_AFTER" ]; then
+    RATE_JSON=$(jq --arg fetched_at "$(file_mtime_iso "$USAGE_CACHE")" "$EXPORT_FROM_USAGE" "$USAGE_CACHE" 2>/dev/null)
+fi
 
-# Save rate limits to file for the StatusBar plugin
-# A payload without rate_limits stays null, so the plugin keeps its last reading
-# and lets it go stale rather than reporting a fresh 0%.
-echo "$INPUT" | jq --argjson model_scoped "$MODEL_SCOPED" '
-    {
-        rate_limits: (
-            if .rate_limits == null then null
-            else .rate_limits
-                + (if ($model_scoped | length) > 0 then {model_scoped: $model_scoped} else {} end)
-            end
-        )
-    }
-' > "$OUTPUT_FILE.tmp" 2>/dev/null && mv -f "$OUTPUT_FILE.tmp" "$OUTPUT_FILE" 2>/dev/null
-
-# Extract values for terminal display
-FIVE_HOUR=$(echo "$INPUT" | jq -r '.rate_limits.five_hour.used_percentage // empty' 2>/dev/null)
-SEVEN_DAY=$(echo "$INPUT" | jq -r '.rate_limits.seven_day.used_percentage // empty' 2>/dev/null)
-
-if [ -z "$FIVE_HOUR" ]; then
-    echo "Claude Code | No rate limit data"
-    exit 0
+# No snapshot: fall back to this session's own payload, and write it out.
+if [ -z "$RATE_JSON" ]; then
+    RATE_JSON=$(echo "$INPUT" | jq "$EXPORT_FROM_PAYLOAD" 2>/dev/null)
+    [ -n "$RATE_JSON" ] && echo "$RATE_JSON" | write_atomic "$OUTPUT_FILE"
 fi
 
 # Color based on usage
@@ -134,14 +165,26 @@ color_for_pct() {
 }
 
 RESET="\033[0m"
-C5=$(color_for_pct "$FIVE_HOUR")
-C7=$(color_for_pct "$SEVEN_DAY")
 
-MODEL_PART=""
+FIVE_HOUR=$(echo "$RATE_JSON" | jq -r '.rate_limits.five_hour.used_percentage // empty' 2>/dev/null)
+SEVEN_DAY=$(echo "$RATE_JSON" | jq -r '.rate_limits.seven_day.used_percentage // empty' 2>/dev/null)
+
+LINE=""
+append_part() {
+    local label=$1 pct=$2
+    LINE="${LINE:+$LINE │ }$(color_for_pct "$pct")${label}: $(printf '%.0f' "$pct")%${RESET}"
+}
+
+[ -n "$FIVE_HOUR" ] && append_part "5h" "$FIVE_HOUR"
+[ -n "$SEVEN_DAY" ] && append_part "7d" "$SEVEN_DAY"
 while IFS=$'\t' read -r NAME PCT; do
     [ -n "$NAME" ] || continue
-    CM=$(color_for_pct "$PCT")
-    MODEL_PART="${MODEL_PART} │ ${CM}${NAME}: $(printf '%.0f' "$PCT")%${RESET}"
-done < <(echo "$MODEL_SCOPED" | jq -r '.[] | "\(.display_name)\t\(.used_percentage)"' 2>/dev/null)
+    append_part "$NAME" "$PCT"
+done < <(echo "$RATE_JSON" | jq -r '.rate_limits.model_scoped // [] | .[] | "\(.display_name)\t\(.used_percentage)"' 2>/dev/null)
 
-printf "${C5}5h: %.0f%%${RESET} │ ${C7}7d: %.0f%%${RESET}%b\n" "$FIVE_HOUR" "$SEVEN_DAY" "$MODEL_PART"
+if [ -z "$LINE" ]; then
+    echo "Claude Code | No rate limit data"
+    exit 0
+fi
+
+printf '%b\n' "$LINE"

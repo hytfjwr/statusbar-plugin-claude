@@ -45,24 +45,29 @@ Add the statusLine configuration to `~/.claude/settings.json`:
 }
 ```
 
-This causes Claude Code to periodically write rate limit data to `~/.claude/rate_limits.json`.
+Claude Code runs the script for every open session, and each passes the figures from its own last
+request, so an idle session carries old numbers. The script therefore takes the 5-hour, 7-day and
+per-model windows from the claude.ai usage endpoint, which is account-wide, and writes
+`~/.claude/rate_limits.json` from that snapshot once a minute.
 
 The script needs `jq`, `bc` and `curl` on `PATH`.
 
-### Per-model weekly windows (Fable)
+### Usage snapshot
 
-The payload Claude Code hands the statusline script only carries the 5-hour and 7-day windows.
-The windows scoped to a single model bucket — `Fable` today — are only served by the claude.ai
-usage endpoint, so the script fetches them itself:
+The payload Claude Code hands the statusline script describes only that session, and carries no
+per-model windows at all. The script therefore reads the claude.ai usage endpoint itself:
 
 - it reads the claude.ai OAuth token from the login keychain (`Claude Code-credentials`), falling
   back to `~/.claude/.credentials.json`
 - it snapshots `https://api.anthropic.com/api/oauth/usage` into `~/.claude/rate_limits_usage.json`
-  at most once every 5 minutes, in a detached background process
-- a failed fetch backs off for a full cycle and leaves the previous snapshot in place
+  at most once a minute, in a detached background process, and writes `~/.claude/rate_limits.json`
+  from it with `fetched_at` set to the fetch time
+- a failed fetch backs off for a full cycle and leaves both files in place, so the plugin marks the
+  data stale once it ages past the Stale Threshold
 
-macOS asks once for permission to read the keychain item; grant it and the windows appear in the
-popup. Deny it and everything else keeps working — only the per-model cards are missing.
+macOS asks once for permission to read the keychain item; grant it. Deny it and the script falls
+back to the payload of whichever session rendered last: the 5-hour and 7-day numbers can jump
+between sessions, and the per-model cards are missing.
 
 ### Build from source
 
@@ -150,6 +155,18 @@ The data is stale, or the 5-hour window is unknown. Check:
 ```bash
 cat ~/.claude/rate_limits.json | jq .
 ```
+
+### Numbers jump between values
+
+The script is running without a usage snapshot and falling back to each session's payload. Check
+that the snapshot exists and is recent:
+
+```bash
+ls -l ~/.claude/rate_limits_usage.json
+jq '.rate_limits.fetched_at' ~/.claude/rate_limits.json
+```
+
+If it is missing, see the next section.
 
 ### Fable usage is missing from the popup
 
