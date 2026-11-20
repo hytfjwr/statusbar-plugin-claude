@@ -6,8 +6,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/hytfjwr/StatusBarKit",
       "state" : {
-        "revision" : "390a401fa8e52c8b9c575993eb41cd49bd54b55b",
-        "version" : "1.10.0"
+        "revision" : "b553d33d13c1bcfbe99275a22abfe3e7a2d7c665",
+        "version" : "1.10.1"
       }
     }
   ],
